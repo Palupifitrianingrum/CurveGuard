@@ -1,0 +1,15 @@
+# Smart City Road Safety — Python dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Tested on Python 3.10+
+
+# Core computer vision
+opencv-python>=4.8.0
+
+# YOLOv8 + ByteTrack (ByteTrack is bundled inside ultralytics)
+ultralytics>=8.0.0
+
+# Numerical computing
+numpy>=1.24.0
