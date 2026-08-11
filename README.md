@@ -1,4 +1,4 @@
-# CurveGuard
+# CurveGuard by Modal Bismillah 
 
 > Smart City Road Safety System for Extreme Curves
 
@@ -61,3 +61,9 @@ Install the dependencies:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Teammates :
+Rakan Hendian Ramadhan
+Rida Larasati
+Palupi Fitria Ningrum
