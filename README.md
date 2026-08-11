@@ -65,9 +65,7 @@ pip install -r requirements.txt
 
 Teammates :
 
-Rakan Hendian Ramadhan
-
-Rida Larasati
-
+Rakan Hendian Ramadhan <br>
+Rida Larasati <br>
 Palupi Fitria Ningrum
 
