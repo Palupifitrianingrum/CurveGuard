@@ -63,8 +63,7 @@ Install the dependencies:
 pip install -r requirements.txt
 ```
 
-Teammates :
-
+Teammates : <br>
 Rakan Hendian Ramadhan <br>
 Rida Larasati <br>
 Palupi Fitria Ningrum
