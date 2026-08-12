@@ -1,29 +1,3 @@
-"""
-main.py
--------
-Pipeline orchestrator — Phase 1.
-
-Phase 1 pipeline:
-    VIDEO → OpenCV → YOLOv8 detection → Visualization
-
-Usage
------
-    # Use the default video path from config.py:
-    python main.py
-
-    # Pass a custom video file:
-    python main.py --video path/to/video.mp4
-
-    # Use webcam (device index 0):
-    python main.py --video 0
-
-    # Disable the output window (headless mode, e.g. on a server):
-    python main.py --no-display
-
-    # Save processed video to a file:
-    python main.py --save
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -35,16 +9,19 @@ import cv2
 import config
 from detector import VehicleDetector
 from visualizer import draw_detections, draw_fps
+from arduino_controller import ArduinoController
 
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
+ARDUINO_PORT = "COM3"
+ARDUINO_BAUDRATE = 9600
+LARGE_VEHICLES = {"bus", "truck"}
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Smart City Road Safety — Phase 1: Detection + Visualization"
+        description="CurveGuard — Vehicle Detection + Arduino Warning"
     )
+
     parser.add_argument(
         "--video",
         type=str,
@@ -54,11 +31,13 @@ def _parse_args() -> argparse.Namespace:
             f"Default: {config.DEFAULT_VIDEO_PATH}"
         ),
     )
+
     parser.add_argument(
         "--no-display",
         action="store_true",
-        help="Run without opening a display window (useful on headless machines).",
+        help="Run without opening a display window.",
     )
+
     parser.add_argument(
         "--save",
         action="store_true",
@@ -67,19 +46,11 @@ def _parse_args() -> argparse.Namespace:
             "config.OUTPUT_VIDEO_PATH."
         ),
     )
+
     return parser.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Video I/O helpers
-# ---------------------------------------------------------------------------
-
 def _open_video(source: str) -> cv2.VideoCapture:
-    """
-    Open a VideoCapture from a file path or webcam index.
-    Exits with a clear error message if the source cannot be opened.
-    """
-    # Allow passing '0', '1', etc. as strings to mean webcam index.
     try:
         index = int(source)
         cap = cv2.VideoCapture(index)
@@ -100,13 +71,18 @@ def _create_writer(
     cap: cv2.VideoCapture,
     output_path: str,
 ) -> cv2.VideoWriter:
-    """Create a VideoWriter that matches the source video's resolution and FPS."""
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    writer = cv2.VideoWriter(
+        output_path,
+        fourcc,
+        fps,
+        (width, height),
+    )
 
     if not writer.isOpened():
         print(f"[WARNING] Could not create output writer at: {output_path}")
@@ -117,91 +93,125 @@ def _create_writer(
     return writer
 
 
-# ---------------------------------------------------------------------------
-# Main pipeline loop
-# ---------------------------------------------------------------------------
+def _get_vehicle_status(detections) -> str:
+    if not detections:
+        return "OFF"
+
+    for detection in detections:
+        if detection.class_name in LARGE_VEHICLES:
+            return "LARGE"
+
+    return "VEHICLE"
+
 
 def run(args: argparse.Namespace) -> None:
-    # --- Initialise detector (loads the model once) ---
     detector = VehicleDetector()
+    arduino = None
+    cap = None
+    writer = None
 
-    # --- Open video source ---
-    cap = _open_video(args.video)
+    try:
+        arduino = ArduinoController(
+            port=ARDUINO_PORT,
+            baudrate=ARDUINO_BAUDRATE,
+        )
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    src_fps      = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap = _open_video(args.video)
 
-    print(f"[Main] Source : {args.video}")
-    print(f"[Main] Resolution : {width}×{height}  |  FPS: {src_fps:.1f}  |  Frames: {total_frames}")
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    # --- Optional output writer ---
-    writer: cv2.VideoWriter | None = None
-    if args.save and config.OUTPUT_VIDEO_PATH:
-        writer = _create_writer(cap, config.OUTPUT_VIDEO_PATH)
+        print(f"[Main] Source     : {args.video}")
+        print(
+            f"[Main] Resolution : {width}×{height} | "
+            f"FPS: {src_fps:.1f} | Frames: {total_frames}"
+        )
+        print(f"[Main] Arduino    : {ARDUINO_PORT}")
 
-    # --- FPS measurement ---
-    fps_display  = 0.0
-    frame_count  = 0
-    t_start      = time.perf_counter()
+        if args.save and config.OUTPUT_VIDEO_PATH:
+            writer = _create_writer(
+                cap,
+                config.OUTPUT_VIDEO_PATH,
+            )
 
-    print("[Main] Starting Phase 1 pipeline.  Press 'q' to quit.")
+        fps_display = 0.0
+        frame_count = 0
+        t_start = time.perf_counter()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("[Main] End of video stream.")
-            break
+        last_status = None
 
-        frame_count += 1
+        print("[Main] Starting CurveGuard. Press 'q' to quit.")
 
-        # ----------------------------------------------------------------
-        # STAGE 1 — YOLOv8 vehicle detection
-        # ----------------------------------------------------------------
-        detections = detector.detect(frame)
+        while True:
+            ret, frame = cap.read()
 
-        # ----------------------------------------------------------------
-        # STAGE 2 — Visualization
-        # (Phase 2+ stages are not active yet — stubs are imported but
-        #  not called, so there is zero overhead)
-        # ----------------------------------------------------------------
-        draw_detections(frame, detections)
-        draw_fps(frame, fps_display)
-
-        # ----------------------------------------------------------------
-        # Output
-        # ----------------------------------------------------------------
-        if writer is not None:
-            writer.write(frame)
-
-        if not args.no_display:
-            cv2.imshow("Smart City Road Safety — Phase 1", frame)
-            # Press 'q' or Esc to quit early
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                print("[Main] User requested exit.")
+            if not ret:
+                print("[Main] End of video stream.")
                 break
 
-        # Update FPS every second
-        elapsed = time.perf_counter() - t_start
-        if elapsed >= 1.0:
-            fps_display = frame_count / elapsed
-            frame_count = 0
-            t_start     = time.perf_counter()
+            frame_count += 1
 
-    # --- Cleanup ---
-    cap.release()
-    if writer is not None:
-        writer.release()
-    cv2.destroyAllWindows()
+            detections = detector.detect(frame)
 
-    print("[Main] Done.")
+            draw_detections(frame, detections)
+            draw_fps(frame, fps_display)
 
+            status = _get_vehicle_status(detections)
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+            if status != last_status:
+                if status == "LARGE":
+                    arduino.large_vehicle()
+
+                elif status == "VEHICLE":
+                    arduino.vehicle()
+
+                else:
+                    arduino.off()
+
+                last_status = status
+
+            if writer is not None:
+                writer.write(frame)
+
+            if not args.no_display:
+                cv2.imshow(
+                    "CurveGuard — Vehicle Detection",
+                    frame,
+                )
+
+                key = cv2.waitKey(1) & 0xFF
+
+                if key in (ord("q"), 27):
+                    print("[Main] User requested exit.")
+                    break
+
+            elapsed = time.perf_counter() - t_start
+
+            if elapsed >= 1.0:
+                fps_display = frame_count / elapsed
+                frame_count = 0
+                t_start = time.perf_counter()
+
+    except KeyboardInterrupt:
+        print("\n[Main] Interrupted by user.")
+
+    finally:
+        if arduino is not None:
+            arduino.off()
+            arduino.close()
+
+        if cap is not None:
+            cap.release()
+
+        if writer is not None:
+            writer.release()
+
+        cv2.destroyAllWindows()
+
+        print("[Main] Done.")
+
 
 if __name__ == "__main__":
     run(_parse_args())
