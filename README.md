@@ -8,7 +8,7 @@ The system uses computer vision and YOLOv8 to detect vehicles from video footage
 
 ## Current Development
 
-### Phase 1 — Vehicle Detection
+### Phase 1 - Vehicle Detection
 
 Current pipeline:
 
